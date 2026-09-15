@@ -1,0 +1,16 @@
+# ===== MCP Server 配置 =====
+spring.application.name=mcp-server
+
+# 服务端口
+server.port=8081
+
+# MCP Server 核心配置
+spring.ai.mcp.server:
+  name: image-search-mcp-server
+  version: 1.0.0
+  type: SYNC
+  # 启用 WebMVC SSE 传输（webmvc starter 默认即启用）
+  sse-endpoint: /sse
+  sse-message-endpoint: /mcp/message
+  # 服务器向客户端提供的说明
+  instructions: Provides image search capability via Pexels API. Call searchImage with a query keyword.

@@ -1,0 +1,59 @@
+HELP.md
+target/
+.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+
+### 敏感配置文件（含真实密钥，切勿提交！） ###
+**/application-secret.properties
+**/application-secret.yml
+**/application-local.properties
+**/application-local.yml
+**/application-local.yaml
+**/.env
+
+### 依赖与构建产物 ###
+node_modules/
+quick-start-web/dist/
+
+### 误生成的空 lock（仅根目录；前端有效 lock 在 quick-start-web/ 下） ###
+/package-lock.json
+
+### 本地工具与日志（DeepSeek Harness 等） ###
+.dsh-tools/
+.dsh-web*.log
+
+### 本地 AI 助手记忆（含对话上下文，勿提交） ###
+.workbuddy/
+
+### 项目分析报告（本地分析文档，勿提交） ###
+项目分析报告.md
+CLAUDE.md
