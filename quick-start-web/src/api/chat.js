@@ -18,6 +18,24 @@ export function sendChat(message, chatId) {
 }
 
 /**
+ * 运行 Agent（显式决策循环）：返回最终答案 + 决策步骤。
+ * <p>
+ * 与 sendChat 的区别：走 /api/agent/chat，响应含 steps（每一步调用了哪个工具、传了什么参数），
+ * 可据此展示 AI 的「思考过程」；且后端有 maxSteps 上限，不会无限循环。
+ *
+ * @param {string} message 用户消息
+ * @param {string} chatId  会话标识
+ * @returns {Promise<{answer:string, steps:Array<{step:number,toolName:string,arguments:string}>,
+ *                    stepsUsed:number, completed:boolean, maxSteps:number, note:string|null}>}
+ */
+export function sendAgentChat(message, chatId) {
+  return http
+    // Agent 可能执行多步（每步一次模型调用），超时放宽到 3 分钟
+    .post('/agent/chat', { message, chatId }, { timeout: 180000 })
+    .then((res) => res.data)
+}
+
+/**
  * 列出所有会话（来自后端 MySQL）。
  * @returns {Promise<Array<{conversationId:string,msgCount:number,lastActive:string}>>}
  */

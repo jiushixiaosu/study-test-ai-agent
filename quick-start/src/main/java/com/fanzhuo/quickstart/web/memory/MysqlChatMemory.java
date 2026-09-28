@@ -17,7 +17,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 路线 B：直接实现 ChatMemory 接口，把完整对话历史持久化到 MySQL。
+ * 路线 B：直接实现 ChatMemory 接口，把完整对话历史持久化到 MySQL，并用 Redis 做热会话缓存。
  *
  * 注意：本类【不】加 @Service/@Component，由 ChatClientConfig.chatMemory() 这个
  * @Bean 工厂方法创建，从而让 windowSize 的 @Value 正确注入。若被组件扫描直接
@@ -26,7 +26,12 @@ import java.util.Map;
  * 与 MessageWindowChatMemory 的区别：
  * - add() 采用「追加写」而非「先删后插」，完整历史全部保留在 chat_memory 表（审计轨迹）。
  * - get() 只返回最近 windowSize 条，作为喂给大模型的提示词上下文窗口，避免上下文无限膨胀。
- * - getAll() 提供绕过窗口、取出某会话全量历史的能力（审计 / 复盘用）。
+ * - getAll() 提供绕过窗口、取出某会话全量历史的能力（审计 / 复盘用，直连 MySQL 不走缓存）。
+ *
+ * 存储策略（Cache-Aside）：
+ * - MySQL 是【权威源】，永远保存全量历史；
+ * - Redis（{@link ChatMemoryCache}）是【缓存层】，只保存窗口内的热数据；
+ * - 缓存未命中或 Redis 异常时，一律回退到 MySQL，保证功能不受影响。
  *
  * 存储采用「type + content + metadata 结构化字段」而非整对象 JSON：
  * 直接 readValue(json, UserMessage.class) 会失败。按 type 用已知构造器重建最稳。
@@ -37,12 +42,17 @@ public class MysqlChatMemory implements ChatMemory {
     private final ObjectMapper objectMapper;
     private final int windowSize;
 
+    /** Redis 缓存层；为 null 表示未启用缓存（全部走 MySQL） */
+    private final ChatMemoryCache cache;
+
     public MysqlChatMemory(JdbcTemplate jdbcTemplate,
                            ObjectMapper objectMapper,
-                           int windowSize) {
+                           int windowSize,
+                           ChatMemoryCache cache) {
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.windowSize = windowSize;
+        this.cache = cache;
     }
 
     @Override
@@ -51,15 +61,25 @@ public class MysqlChatMemory implements ChatMemory {
         if (messages == null || messages.isEmpty()) {
             return;
         }
-        // 取当前会话最大序号，新消息在其后追加，保证顺序且全量保留
-        Integer maxOrder = jdbcTemplate.queryForObject(
-                "SELECT COALESCE(MAX(msg_order), -1) FROM chat_memory WHERE conversation_id = ?",
-                Integer.class, conversationId);
-        int start = (maxOrder == null ? -1 : maxOrder) + 1;
 
-        // 首条消息（该会话第一次写入）时，用第一条用户提问作为会话标题
+        // ① 生成起始序号：优先用 Redis INCR（原子，省掉 SELECT MAX）
+        //    计数器不存在时（首次或 TTL 过期）会用 nextOrderFromDb 惰性初始化，避免与库中已有序号冲突
+        Integer start = null;
+        if (cache != null) {
+            Long seq = cache.nextOrder(conversationId, messages.size(),
+                    () -> nextOrderFromDb(conversationId));
+            if (seq != null) {
+                start = seq.intValue();
+            }
+        }
+        // 降级：缓存未启用或 Redis 异常 → 回退为查询当前最大序号
+        if (start == null) {
+            start = nextOrderFromDb(conversationId).intValue();
+        }
+
+        // ② 首条消息（该会话第一次写入）时，用第一条用户提问作为会话标题
         String title = null;
-        if (start == 0) { // 说明此前没有任何消息
+        if (start == 0) {
             title = messages.stream()
                     .filter(m -> m.getMessageType() == MessageType.USER)
                     .map(Message::getText)
@@ -69,6 +89,7 @@ public class MysqlChatMemory implements ChatMemory {
                     .orElse(null);
         }
 
+        // ③ 写入 MySQL（权威源，全量保留）
         for (int i = 0; i < messages.size(); i++) {
             Message m = messages.get(i);
             String content = m.getText();
@@ -85,27 +106,45 @@ public class MysqlChatMemory implements ChatMemory {
                     content,
                     toJson(m.getMetadata()));
         }
+
+        // ④ 更新缓存（追加 + LTRIM 保持窗口）
+        if (cache != null) {
+            cache.putMessages(conversationId, messages, true);
+        }
     }
 
     @Override
     public List<Message> get(String conversationId) {
-        List<Message> all = jdbcTemplate.query(
-                "SELECT msg_type, content, metadata FROM chat_memory "
-                        + "WHERE conversation_id = ? ORDER BY msg_order ASC",
-                ROW_MAPPER, conversationId);
-        // 返回最近 windowSize 条作为上下文窗口；全量仍在库中
-        if (all.size() <= windowSize) {
-            return all;
+        // ① 缓存命中 → 直接返回，零 DB 查询
+        if (cache != null) {
+            List<Message> cached = cache.getMessages(conversationId);
+            if (cached != null) {
+                return cached;
+            }
         }
-        return new ArrayList<>(all.subList(all.size() - windowSize, all.size()));
+
+        // ② 未命中 → 只查窗口内的 N 条（SQL 层裁剪，避免读全量再丢弃）
+        List<Message> window = queryWindow(conversationId, windowSize);
+
+        // ③ 回填缓存，供后续请求命中
+        if (cache != null && !window.isEmpty()) {
+            cache.putMessages(conversationId, window, false);
+        }
+        return window;
     }
 
     @Override
     public void clear(String conversationId) {
         jdbcTemplate.update("DELETE FROM chat_memory WHERE conversation_id = ?", conversationId);
+        if (cache != null) {
+            cache.evict(conversationId);
+        }
     }
 
-    /** 审计用途：取出该会话的完整历史（不走窗口裁剪）。 */
+    /**
+     * 审计用途：取出该会话的完整历史（不走窗口裁剪，也不走缓存）。
+     * 缓存只保存窗口内的热数据，因此全量回放必须直连 MySQL。
+     */
     public List<Message> getAll(String conversationId) {
         return jdbcTemplate.query(
                 "SELECT msg_type, content, metadata FROM chat_memory "
@@ -116,6 +155,9 @@ public class MysqlChatMemory implements ChatMemory {
     /**
      * 列出所有会话（去重 conversation_id），含消息条数与最近活跃时间。
      * 供前端「历史会话列表」使用。
+     * <p>
+     * 说明：此接口属低频调用（仅打开页面时），暂不加缓存；表上已有
+     * uk_conv_order(conversation_id, msg_order) 复合索引可用。
      */
     public List<ConversationSummary> listConversations() {
         return jdbcTemplate.query(
@@ -131,6 +173,33 @@ public class MysqlChatMemory implements ChatMemory {
 
     /** 会话列表项（轻量，不含消息体）。 */
     public record ConversationSummary(String conversationId, String title, int msgCount, java.time.LocalDateTime lastActive) {
+    }
+
+    /**
+     * 从 MySQL 取下一个可用序号（当前 MAX(msg_order) + 1）。
+     * 用于 Redis 计数器的惰性初始化，以及缓存不可用时的降级。
+     */
+    private Long nextOrderFromDb(String conversationId) {
+        Integer maxOrder = jdbcTemplate.queryForObject(
+                "SELECT COALESCE(MAX(msg_order), -1) FROM chat_memory WHERE conversation_id = ?",
+                Integer.class, conversationId);
+        return (maxOrder == null ? -1L : maxOrder.longValue()) + 1;
+    }
+
+    /**
+     * 只取最近 limit 条（按 msg_order 升序返回，符合对话上下文顺序）。
+     * <p>
+     * 用「子查询 DESC + LIMIT 再外层 ASC」的方式在 SQL 层完成裁剪，
+     * 避免旧实现「读全量再在内存 subList」的 IO 浪费。
+     * 该语句可命中 uk_conv_order(conversation_id, msg_order) 复合索引。
+     */
+    private List<Message> queryWindow(String conversationId, int limit) {
+        return jdbcTemplate.query(
+                "SELECT msg_type, content, metadata FROM ("
+                        + "  SELECT msg_type, content, metadata, msg_order FROM chat_memory "
+                        + "  WHERE conversation_id = ? ORDER BY msg_order DESC LIMIT ?"
+                        + ") t ORDER BY msg_order ASC",
+                ROW_MAPPER, conversationId, limit);
     }
 
     private final RowMapper<Message> ROW_MAPPER = (rs, rowNum) ->

@@ -1,7 +1,9 @@
 package com.fanzhuo.quickstart.web.tool;
 
+import cn.hutool.http.HttpUtil;
 import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
+import cn.hutool.json.JSONUtil;
 import com.fanzhuo.quickstart.config.GeoCodingService;
 import com.fanzhuo.quickstart.config.HttpClientService;
 import org.springframework.ai.tool.annotation.Tool;
@@ -304,10 +306,16 @@ public class PoiSearchTool {
     }
 
     private JSONObject doGet(String url) {
-        JSONObject r = httpClientService
-                .get(url, HttpHeaders.EMPTY, new ParameterizedTypeReference<JSONObject>() {})
-                .getBody();
-        return r == null ? new JSONObject() : r;
+        // 用 Hutool 直接发送，避免 RestClient 对已编码 URL 再次处理（双重编码风险）
+        String body = HttpUtil.get(url, 8000);
+        if (body == null || body.isBlank()) {
+            return new JSONObject();
+        }
+        try {
+            return JSONUtil.parseObj(body);
+        } catch (Exception e) {
+            return new JSONObject();
+        }
     }
 
     private void validate(JSONObject resp) {

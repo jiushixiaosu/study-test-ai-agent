@@ -40,7 +40,7 @@ import { ref, reactive, computed, nextTick, onMounted } from 'vue'
 import Sidebar from './components/Sidebar.vue'
 import MessageItem from './components/MessageItem.vue'
 import ChatInput from './components/ChatInput.vue'
-import { sendChat, listConversations, getHistory, clearConversation, analyzeImage } from './api/chat'
+import { sendAgentChat, listConversations, getHistory, clearConversation, analyzeImage } from './api/chat'
 
 let seq = 0
 const genId = () => `chat-${Date.now()}-${seq++}`
@@ -118,12 +118,19 @@ async function send(text) {
   scrollToBottom()
 
   try {
-    const reply = await sendChat(text, currentChatId.value)
+    // 走 Agent 显式决策循环：返回 answer + steps（决策过程）
+    const res = await sendAgentChat(text, currentChatId.value)
     // 必须用 reactive 包装：否则 typewrite 改的是原始对象，绕过 Vue 代理，
     // computed 不会重算，界面会卡在打字机中途的某一帧
-    const msg = reactive({ role: 'ai', content: '' })
+    const msg = reactive({
+      role: 'ai',
+      content: '',
+      steps: res?.steps || [],        // 决策步骤，供 MessageItem 折叠展示
+      stepsUsed: res?.stepsUsed || 0,
+      note: res?.note || null         // 如"达到最大步数"、"会话处理中"
+    })
     currentMessages.value.push(msg)
-    await typewrite(msg, reply)
+    await typewrite(msg, res?.answer || '（未返回内容）')
   } catch (e) {
     currentMessages.value.push({
       role: 'ai',

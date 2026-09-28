@@ -1,5 +1,6 @@
 package com.fanzhuo.quickstart.config;
 
+import com.fanzhuo.quickstart.web.memory.ChatMemoryCache;
 import com.fanzhuo.quickstart.web.memory.MysqlChatMemory;
 import com.fanzhuo.quickstart.web.tool.ImageRecognitionTool;
 import com.fanzhuo.quickstart.web.tool.ImageSearchTool;
@@ -13,6 +14,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.redisson.api.RedissonClient;
 import org.springframework.jdbc.core.JdbcTemplate;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -30,9 +32,24 @@ public class ChatClientConfig {
     @Bean
     public ChatMemory chatMemory(JdbcTemplate jdbcTemplate,
                                  ObjectMapper objectMapper,
-                                 @Value("${chat.memory.window-size:20}") int windowSize) {
-        // 路线 B：MySQL 持久化记忆，完整历史落库，读取按窗口返回
-        return new MysqlChatMemory(jdbcTemplate, objectMapper, windowSize);
+                                 ObjectProvider<RedissonClient> redissonProvider,
+                                 @Value("${chat.memory.window-size:20}") int windowSize,
+                                 @Value("${chat.memory.cache.enabled:true}") boolean cacheEnabled,
+                                 @Value("${chat.memory.cache.ttl-seconds:86400}") long cacheTtlSeconds) {
+        // Redis 缓存层（可选）：只缓存热会话窗口，MySQL 始终是权威源。
+        // 未启用或 Redis 不可用时传 null，MysqlChatMemory 会自动全部走 MySQL。
+        ChatMemoryCache cache = null;
+        if (cacheEnabled) {
+            RedissonClient redisson = redissonProvider.getIfAvailable();
+            if (redisson != null) {
+                cache = new ChatMemoryCache(redisson, windowSize, cacheTtlSeconds);
+                log.info("会话记忆 Redis 缓存已启用（窗口 {} 条，TTL {} 秒）", windowSize, cacheTtlSeconds);
+            }
+        }
+        if (cache == null) {
+            log.info("会话记忆未启用 Redis 缓存，读写全部走 MySQL");
+        }
+        return new MysqlChatMemory(jdbcTemplate, objectMapper, windowSize, cache);
     }
 
     @Bean

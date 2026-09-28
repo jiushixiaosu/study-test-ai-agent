@@ -130,13 +130,15 @@ public class AgentLoopService {
                 .build();
 
         for (int step = 1; step <= maxSteps; step++) {
-            Prompt prompt = new Prompt(messages, options);
+            // 传列表副本：Prompt 会持有传入列表的引用，若不复制，
+            // 后续对 messages 的任何修改都会同步污染 prompt，导致工具历史重复拼装
+            Prompt prompt = new Prompt(new ArrayList<>(messages), options);
             ChatResponse response = chatModel.call(prompt);
             AssistantMessage output = response.getResult().getOutput();
-            messages.add(output);
 
             // 模型不再要求工具 → 本轮任务结束
             if (!output.hasToolCalls()) {
+                messages.add(output);
                 answer = output.getText();
                 completed = true;
                 log.info("Agent 完成, conversationId={}, 步数={}", conversationId, step);
@@ -150,7 +152,10 @@ public class AgentLoopService {
                 steps.add(new AgentStep(step, toolCall.name(), toolCall.arguments()));
             }
 
-            // 执行工具，并用返回的完整历史替换当前历史
+            // 执行工具：此处【绝不能】先把 output 加入 messages。
+            // executeToolCalls 内部会自行把 assistant(tool_calls) 与 tool 响应一并拼进新历史；
+            // 若提前添加，assistant 消息会重复，模型将报
+            // "An assistant message with 'tool_calls' must be followed by tool messages"。
             ToolExecutionResult execResult = toolCallingManager.executeToolCalls(prompt, response);
             messages = new ArrayList<>(execResult.conversationHistory());
         }
@@ -182,7 +187,7 @@ public class AgentLoopService {
                     .topK(ragTopK)
                     .similarityThreshold(ragThreshold)
                     .build());
-            if (docs == null || docs.isEmpty()) {
+            if (docs.isEmpty()) {
                 return;
             }
             String context = docs.stream()

@@ -4,7 +4,6 @@ import cn.hutool.crypto.digest.DigestUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
-import org.springframework.ai.transformer.splitter.TokenTextSplitter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
@@ -41,7 +40,7 @@ public class KnowledgeBaseInitializer implements ApplicationRunner {
     private static final Logger log = LoggerFactory.getLogger(KnowledgeBaseInitializer.class);
 
     private final PersistentVectorStore vectorStore;
-    private final TokenTextSplitter splitter;
+    private final ChineseRecursiveTextSplitter splitter;
 
     @Value("${rag.knowledge.enabled:true}")
     private boolean enabled;
@@ -52,7 +51,7 @@ public class KnowledgeBaseInitializer implements ApplicationRunner {
     @Value("${rag.knowledge.fingerprint-file:${user.home}/.study-ai/knowledge.fingerprint}")
     private String fingerprintFilePath;
 
-    public KnowledgeBaseInitializer(PersistentVectorStore vectorStore, TokenTextSplitter splitter) {
+    public KnowledgeBaseInitializer(PersistentVectorStore vectorStore, ChineseRecursiveTextSplitter splitter) {
         this.vectorStore = vectorStore;
         this.splitter = splitter;
     }

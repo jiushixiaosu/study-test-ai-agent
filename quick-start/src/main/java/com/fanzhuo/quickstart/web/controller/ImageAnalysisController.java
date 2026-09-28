@@ -2,8 +2,11 @@ package com.fanzhuo.quickstart.web.controller;
 
 import com.fanzhuo.quickstart.web.service.ConversationLockService;
 import com.fanzhuo.quickstart.web.service.ImageAnalysisService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -33,6 +36,8 @@ import java.util.Map;
 @RequestMapping("/api/image")
 public class ImageAnalysisController {
 
+    private static final Logger log = LoggerFactory.getLogger(ImageAnalysisController.class);
+
     private final ImageAnalysisService imageAnalysisService;
     private final ChatMemory chatMemory;
     private final ConversationLockService conversationLockService;
@@ -54,7 +59,9 @@ public class ImageAnalysisController {
         String mimeType = (file.getContentType() != null && !file.getContentType().isBlank())
                 ? file.getContentType() : MediaType.IMAGE_PNG_VALUE;
         String base64 = Base64.getEncoder().encodeToString(file.getBytes());
-        String content = imageAnalysisService.analyzeImageBase64(base64, mimeType, question);
+        // 带上会话历史：让视觉模型在当前对话语境下解读图片，而不是套用通用模板
+        String content = imageAnalysisService.analyzeImageBase64(
+                base64, mimeType, question, loadHistory(chatId));
 
         // 落库：用户提问（含图片占位标记）+ 模型分析结果
         String userText = (question == null || question.isBlank())
@@ -68,7 +75,8 @@ public class ImageAnalysisController {
     /** 图片 URL 识别：POST /api/image/analyze-url（JSON） */
     @PostMapping(value = "/analyze-url", consumes = MediaType.APPLICATION_JSON_VALUE)
     public Map<String, String> analyzeUrl(@RequestBody AnalyzeUrlRequest request) {
-        String content = imageAnalysisService.analyzeImageUrl(request.url(), request.question());
+        String content = imageAnalysisService.analyzeImageUrl(
+                request.url(), request.question(), loadHistory(request.chatId()));
 
         String userText = (request.question() == null || request.question().isBlank())
                 ? "[图片] " + request.url()
@@ -76,6 +84,25 @@ public class ImageAnalysisController {
         persistToMemory(request.chatId(), userText, content);
 
         return Map.of("content", content);
+    }
+
+    /**
+     * 读取该会话最近的对话历史，作为视觉模型理解图片的语境。
+     * <p>
+     * 这是消除「图片分析与后续提问割裂」的关键：视觉模型不共享主对话的记忆，
+     * 只有把历史显式喂给它，它才能结合上下文解读图片。
+     * 历史读取失败时降级为空历史 —— 图片分析照常可用，只是丢掉语境。
+     */
+    private List<Message> loadHistory(String chatId) {
+        if (chatId == null || chatId.isBlank()) {
+            return List.of();
+        }
+        try {
+            return chatMemory.get(chatId);
+        } catch (Exception e) {
+            log.warn("读取会话历史失败，图片分析将不带上下文, chatId={}", chatId, e);
+            return List.of();
+        }
     }
 
     /** 写入会话记忆（chat_memory 表）。chatId 为空则不落库，保持向后兼容。 */

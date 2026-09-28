@@ -1,10 +1,10 @@
 package com.fanzhuo.quickstart.web.controller;
 
+import com.fanzhuo.quickstart.config.ChineseRecursiveTextSplitter;
 import com.fanzhuo.quickstart.config.PersistentVectorStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
-import org.springframework.ai.transformer.splitter.TokenTextSplitter;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -37,9 +37,9 @@ public class RagController {
     private static final Logger log = LoggerFactory.getLogger(RagController.class);
 
     private final PersistentVectorStore vectorStore;
-    private final TokenTextSplitter splitter;
+    private final ChineseRecursiveTextSplitter splitter;
 
-    public RagController(PersistentVectorStore vectorStore, TokenTextSplitter splitter) {
+    public RagController(PersistentVectorStore vectorStore, ChineseRecursiveTextSplitter splitter) {
         this.vectorStore = vectorStore;
         this.splitter = splitter;
     }
